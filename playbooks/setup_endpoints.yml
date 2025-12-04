@@ -1,3 +1,7 @@
+# Need to import playbooks at the top
+- import_playbook: ./setup_certificate.yml
+
+# Linux Host configurations
 - name: Configure Linux hosts
   hosts: rocky:ubuntu_vms
   become: yes
@@ -46,18 +50,6 @@
     - name: Test Linux connectivity
       ansible.builtin.ping:
 
-- name: Generate certificates for Windows hosts
-  hosts: localhost
-  gather_facts: no
-  vars:
-    cert_user: ansible   # or AnsibleCertUser
-  tasks:
-    - name: Pass cert_user variable
-      set_fact:
-        username: "{{ cert_user }}"
-    - name: Run setup_certificate.yml
-      ansible.builtin.import_playbook: setup_certificate.yml
-
 - name: Configure Windows hosts for certificate-based WinRM
   hosts: windows
   gather_facts: yes
@@ -86,13 +78,12 @@
         executable: powershell
 
     - name: Ensure firewall allows 5986
-      ansible.windows.win_firewall_rule:
-        name: "WinRM HTTPS"
-        enable: yes
-        direction: in
-        localport: 5986
-        protocol: TCP
-        action: allow
+      ansible.windows.win_shell: |
+        if (-not (Get-NetFirewallRule -DisplayName "WinRM HTTPS")) {
+          New-NetFirewallRule -DisplayName "WinRM HTTPS" -Direction Inbound -LocalPort 5986 -Protocol TCP -Action Allow -Enabled True
+        }
+      args:
+        executable: powershell
 
     - name: Map certificate to user
       ansible.windows.win_shell: |
