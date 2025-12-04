@@ -1,4 +1,3 @@
----
 - name: Configure Linux hosts
   hosts: rocky:ubuntu_vms
   become: yes
@@ -38,15 +37,14 @@
           when: ansible_os_family == "Debian"
 
         - name: Allow SSH in ufw
-          ansible.builtin.ufw:
-            rule: allow
-            name: OpenSSH
+          ansible.builtin.command: ufw allow OpenSSH
+          become: yes
+          args:
+            warn: false
           when: ansible_os_family == "Debian"
 
     - name: Test Linux connectivity
       ansible.builtin.ping:
-
----
 
 - name: Generate certificates for Windows hosts
   hosts: localhost
@@ -54,22 +52,19 @@
   vars:
     cert_user: ansible   # or AnsibleCertUser
   tasks:
-
-    - name: Run setup_certificate.yml from winrm-cert-auth
-      import_playbook: ../winrm-cert-auth/setup_certificate.yml
-      vars:
+    - name: Pass cert_user variable
+      set_fact:
         username: "{{ cert_user }}"
-
----
+    - name: Run setup_certificate.yml
+      ansible.builtin.import_playbook: setup_certificate.yml
 
 - name: Configure Windows hosts for certificate-based WinRM
   hosts: windows
   gather_facts: yes
   vars:
     cert_user: ansible
-    cert_path: "../winrm-cert-auth/cert"   # folder created by setup_certificate.yml
+    cert_path: "./cert"   # folder created by setup_certificate.yml
   tasks:
-
     - name: Ensure WinRM service is running
       ansible.windows.win_service:
         name: WinRM
