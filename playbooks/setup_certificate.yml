@@ -20,20 +20,28 @@
       group: "{{ ansible_user | default('student') }}"
       mode: '0700'
 
+  # Generate Certificate Key password
   # This isn't used for WinRM, the modules just require a passphrase to be set.
   - name: Generate certificate key password
     ansible.builtin.set_fact:
       certificate_password: "{{ lookup('ansible.builtin.password', playbook_dir ~ '/cert/cert_password', length=15) }}"
 
+  # CA Private Key Check
+  - name: Check if CA private key exists
+    ansible.builtin.stat:
+      path: '{{ cert_dir }}/ca.key'
+    register: ca_key_stat
+
   #-----------------------------------------------------------------------
   # CA PRIVATE KEY: (idempotent: module will not overwrite and existing key)
   #-----------------------------------------------------------------------
-  - name: Create CA private key
+  - name: Create CA private key if missing
     community.crypto.openssl_privatekey:
       path: '{{ cert_dir }}/ca.key'
       passphrase: "{{ certificate_password }}"
       cipher: auto
     register: ca_key
+    when: not ca_key_stat.exists
 
   #------------------------------------
   # CA CSR
@@ -54,6 +62,12 @@
     #CSR will alway be identical
     changed_when: false 
 
+  # CA Cert Check
+  - name: Check if CA cert exists
+    ansible.builtin.stat:
+      path: '{{ cert_dir }}/ca.pem'
+    register: ca_cert_stat
+
   #------------------------------------------------------
   # CA Cert: (idempotent: module check existing certificate
   #-------------------------------------------------------
@@ -65,6 +79,14 @@
       privatekey_path: '{{ cert_dir }}/ca.key'
       privatekey_passphrase: "{{ certificate_password }}"
       provider: selfsigned
+    when: no ca_cert_stat.exists
+
+  # Client Private Key
+  - name: Check if Client Private key exists
+    ansible.builtin.stat:
+      path: '{{ cert_dir }}/client_cert.key'
+    register: client_key_stat
+
 
   #----------------------------------
   # CLIENT PRIVATE KEY: (idempotent)
@@ -74,6 +96,7 @@
       path: '{{ cert_dir }}/client_cert.key'
       passphrase: '{{ certificate_password }}'
       cipher: auto
+    when: no client_key_stat.exists
 
   #----------------------------------
   # CLIENT CSR: (deterministic)
@@ -107,8 +130,6 @@
       ownca_privatekey_passphrase: "{{ certificate_password }}"
       ownca_not_after: +365d
       ownca_not_before: '-1d'
-      # This keeps from over writing existing keys
-      regenerate: never
     register: client_cert
 
   #----------------------------------------------------
