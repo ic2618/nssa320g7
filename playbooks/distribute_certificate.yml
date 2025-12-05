@@ -1,0 +1,50 @@
+- name: Distribute certificates to endpoints
+  hosts: all
+  gather_facts: true
+  vars:
+    cert_dir: "{{ playbook_dir }}/../cert"   # local directory on controller
+    linux_ca_dest: "/etc/ssl/certs/ca.pem"
+    windows_cert_dest: "C:\\cert"
+  tasks:
+
+    # ----------------------------
+    # Linux hosts
+    # ----------------------------
+    - name: Ensure CA directory exists on Linux hosts
+      ansible.builtin.file:
+        path: "{{ linux_ca_dest | dirname }}"
+        state: directory
+        mode: '0755'
+      when: ansible_os_family in ['Debian', 'RedHat', 'Rocky']
+
+    - name: Copy CA certificate to Linux hosts
+      ansible.builtin.copy:
+        src: "{{ cert_dir }}/ca.pem"
+        dest: "{{ linux_ca_dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+      when: ansible_os_family in ['Debian', 'RedHat', 'Rocky']
+
+    # ----------------------------
+    # Windows hosts
+    # ----------------------------
+    - name: Ensure certificate directory exists on Windows hosts
+      ansible.windows.win_file:
+        path: "{{ windows_cert_dest }}"
+        state: directory
+
+    - name: Copy client certificate PEM to Windows hosts
+      ansible.windows.win_copy:
+        src: "{{ cert_dir }}/client_cert.pem"
+        dest: "{{ windows_cert_dest }}\\client_cert.pem"
+
+    - name: Copy client certificate private key (no passphrase) to Windows hosts
+      ansible.windows.win_copy:
+        src: "{{ cert_dir }}/client_cert_no_pass.key"
+        dest: "{{ windows_cert_dest }}\\client_cert_no_pass.key"
+
+    - name: Copy CA certificate to Windows hosts
+      ansible.windows.win_copy:
+        src: "{{ cert_dir }}/ca.pem"
+        dest: "{{ windows_cert_dest }}\\ca.pem"
