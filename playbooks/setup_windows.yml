@@ -2,39 +2,52 @@
   hosts: windows
   gather_facts: true
   strategy: linear
+
   vars:
     cert_dir: "/home/student/project/nssa320g7/cert"
 
   tasks:
 
-    - name: Ensure required facts are defined
+    # -------------------------------------------------------------------------
+    # VALIDATION: Ensure variables are defined
+    # -------------------------------------------------------------------------
+    - name: Validate required vars
       ansible.builtin.assert:
         that:
           - username is defined
           - cert_dir is defined
+        fail_msg: "username or cert_dir variable missing."
 
-    - name: Check that CA and client certs exist on controller
+
+    # -------------------------------------------------------------------------
+    # VALIDATION: Ensure CA + client cert exist on controller
+    # -------------------------------------------------------------------------
+    - name: Check local cert files exist
       ansible.builtin.stat:
         path: "{{ cert_dir }}/{{ item }}.pem"
       delegate_to: localhost
-      run_once: true
-      register: local_cert_stat
       loop:
         - ca
         - client_cert
+      register: cert_stats
 
-    - name: Fail if local certs are missing
+    - name: Fail if CA or client cert missing
       ansible.builtin.assert:
         that:
-          - local_cert_stat.results[0].stat.exists
-          - local_cert_stat.results[1].stat.exists
+          - cert_stats.results[0].stat.exists
+          - cert_stats.results[1].stat.exists
+        fail_msg: "CA or client certificate missing in {{ cert_dir }}."
       run_once: true
 
-    - name: Generate local user password
+
+    # -------------------------------------------------------------------------
+    # Create Windows user for cert auth
+    # -------------------------------------------------------------------------
+    - name: Generate local password for Windows cert-auth user
       ansible.builtin.set_fact:
         user_password: "{{ lookup('ansible.builtin.password', cert_dir ~ '/user_password', length=15) }}"
 
-    - name: Ensure local user exists
+    - name: Ensure Windows user exists
       ansible.windows.win_user:
         name: "{{ username }}"
         groups:
@@ -45,57 +58,156 @@
         password_never_expires: true
         user_cannot_change_password: true
 
-    - name: Copy CA and client certs to remote host
+
+    # -------------------------------------------------------------------------
+    # Copy CA + client cert to Windows
+    # -------------------------------------------------------------------------
+    - name: Copy cert PEMs to Windows TEMP
       ansible.windows.win_copy:
         src: "{{ cert_dir }}/{{ item }}.pem"
         dest: "C:\\Windows\\TEMP\\{{ item }}.pem"
       loop:
         - ca
         - client_cert
-      register: copy_results
+      register: cert_copy_results
 
-    - name: Import CA as Trusted Root (idempotent)
+    - name: Validate cert copy succeeded
+      ansible.builtin.assert:
+        that: "{{ cert_copy_results.results | map(attribute='changed') | list | length > 0 }}"
+        fail_msg: "Certificate copy to Windows failed."
+
+
+    # -------------------------------------------------------------------------
+    # Import CA into Trusted Root
+    # -------------------------------------------------------------------------
+    - name: Import CA cert into Trusted Root
       ansible.windows.win_certificate_store:
         path: C:\Windows\TEMP\ca.pem
-        state: present
         store_location: LocalMachine
         store_name: Root
+        state: present
+      register: ca_import
 
-    - name: Trust client certificate (idempotent)
+    - name: Validate CA import success
+      ansible.builtin.assert:
+        that:
+          - ca_import is defined
+        fail_msg: "CA certificate import failed."
+
+
+    # -------------------------------------------------------------------------
+    # Import client certificate into TrustedPeople
+    # -------------------------------------------------------------------------
+    - name: Import client certificate into TrustedPeople
       ansible.windows.win_certificate_store:
         path: C:\Windows\TEMP\client_cert.pem
-        state: present
         store_location: LocalMachine
         store_name: TrustedPeople
-      register: client_cert_info
+        state: present
+      register: client_import
 
-    - name: Enable WinRM Certificate Auth (idempotent)
+    - name: Validate client cert import success
+      ansible.builtin.assert:
+        that:
+          - client_import is defined
+        fail_msg: "Client certificate import failed."
+
+
+    # -------------------------------------------------------------------------
+    # Extract thumbprint from imported certificate safely
+    # -------------------------------------------------------------------------
+    - name: Retrieve thumbprint from certificate store
       ansible.windows.win_powershell:
         script: |
-          $authPath = 'WSMan:\localhost\Service\Auth\Certificate'
-          if ((Get-Item -LiteralPath $authPath).Value -ne $true) {
-              Set-Item -LiteralPath $authPath -Value $true
+          $cert = Get-ChildItem -Path Cert:\LocalMachine\TrustedPeople | Where-Object { $_.Subject -like "*{{ username }}*" }
+          if (-not $cert) { Write-Output "NOT_FOUND" }
+          else { $cert.Thumbprint }
+      register: client_thumb
+
+    - name: Fail if thumbprint cannot be extracted
+      ansible.builtin.assert:
+        that:
+          - client_thumb.output[0] != "NOT_FOUND"
+        fail_msg: "Client certificate imported, but thumbprint cannot be retrieved."
+
+
+    # -------------------------------------------------------------------------
+    # Enable WinRM Certificate Authentication
+    # -------------------------------------------------------------------------
+    - name: Enable WinRM certificate authentication
+      ansible.windows.win_powershell:
+        script: |
+          $path = "WSMan:\localhost\Service\Auth\Certificate"
+          $current = (Get-Item -LiteralPath $path).Value
+          if ($current -ne $true) {
+            Set-Item -LiteralPath $path -Value $true
           }
+      register: winrm_cert_auth
 
-    - name: Map client certificate to user (idempotent)
+    - name: Validate WinRM cert-auth enabled
       ansible.windows.win_powershell:
         script: |
-          $thumb = "{{ client_cert_info.thumbprints[0] }}"
-          $existing = Get-ChildItem WSMan:\localhost\ClientCertificate | Where-Object {$_.Thumbprint -eq $thumb}
+          (Get-Item -LiteralPath 'WSMan:\localhost\Service\Auth\Certificate').Value
+      register: winrm_auth_status
+
+    - name: Fail if WinRM cert-auth did not enable
+      ansible.builtin.assert:
+        that:
+          - winrm_auth_status.output[0] -eq "True"
+        fail_msg: "WinRM certificate authentication was NOT enabled!"
+
+
+    # -------------------------------------------------------------------------
+    # Map certificate → user
+    # -------------------------------------------------------------------------
+    - name: Map certificate thumbprint to user (idempotent)
+      ansible.windows.win_powershell:
+        script: |
+          $thumb = "{{ client_thumb.output[0] }}"
+          $existing = Get-ChildItem WSMan:\localhost\ClientCertificate | Where-Object { $_.Thumbprint -eq $thumb }
+
           if (-not $existing) {
-            winrm set winrm/config/service/certmapping @{CertificateThumbprint=$thumb;UserName="{{ username }}"}
+            winrm set winrm/config/service/certmapping @{
+              CertificateThumbprint = $thumb;
+              UserName = "{{ username }}";
+            }
           }
+      register: certmap_result
 
-    - name: Generate WinRM inventory file (controller only)
+    - name: Validate certificate mapping
+      ansible.windows.win_powershell:
+        script: |
+          $thumb = "{{ client_thumb.output[0] }}"
+          $mapped = Get-ChildItem WSMan:\localhost\ClientCertificate | Where-Object { $_.Thumbprint -eq $thumb }
+          if ($mapped) { "OK" } else { "NOT_MAPPED" }
+      register: certmap_check
+
+    - name: Fail if cert not mapped to user
+      ansible.builtin.assert:
+        that:
+          - certmap_check.output[0] == "OK"
+        fail_msg: "Client certificate failed to map to user {{ username }}."
+
+
+    # -------------------------------------------------------------------------
+    # Generate cert-only inventory
+    # -------------------------------------------------------------------------
+    - name: Generate WinRM cert-auth inventory file
       ansible.builtin.template:
-        src: cert_inventory.ini.j2
+        src: templates/cert_inventory.ini.j2
         dest: "{{ playbook_dir }}/cert_inventory.ini"
         mode: '0600'
       delegate_to: localhost
       run_once: true
 
-    - name: Output summary
+
+    # -------------------------------------------------------------------------
+    # Final summary
+    # -------------------------------------------------------------------------
+    - name: Summary
       ansible.builtin.debug:
-        msg: >
-          WinRM service configured for '{{ username }}'.
-          Inventory file created at '{{ playbook_dir }}/cert_inventory.ini'.
+        msg: |
+          WinRM certificate authentication successfully configured for Windows host.
+          User: {{ username }}
+          Thumbprint: {{ client_thumb.output[0] }}
+          Inventory generated: {{ playbook_dir }}/cert_inventory.ini
