@@ -1,11 +1,38 @@
-# Need to import playbooks at the top
-- name: Generate Certificates for Windows Hosts
-  ansible.builtin.import_playbook: ./setup_certificate.yml
+# -------------------------------------------------------------
+# Central playbook for endpoints
+# -------------------------------------------------------------
 
-# Linux Host configurations
+# ---------------------------
+# Generate certificates
+# ---------------------------
+- name: Generate Certificates for all endpoints
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cert_dir: "{{ playbook_dir }}/../cert"
+  tasks:
+    - name: Run certificate setup playbook
+      ansible.builtin.import_playbook: ./setup_certificate.yml
+
+# ---------------------------
+# Distribute certificates
+# ---------------------------
+- name: Distribute certificates to endpoints
+  hosts: all
+  gather_facts: yes
+  vars:
+    cert_dir: "{{ playbook_dir }}/../cert"
+  tasks:
+    - name: Import distribution playbook
+      ansible.builtin.import_playbook: ./distribute_certificates.yml
+
+# ---------------------------
+# Configure Linux hosts
+# ---------------------------
 - name: Configure Linux hosts
   hosts: rocky:ubuntu_vms
   become: true
+  gather_facts: yes
   vars:
     ssh_ports:
       RedHat: 22
@@ -50,54 +77,15 @@
     - name: Test Linux connectivity
       ansible.builtin.ping:
 
+# ---------------------------
+# Configure Windows hosts
+# ---------------------------
 - name: Configure Windows hosts for certificate-based WinRM
   hosts: windows
-  gather_facts: true
+  gather_facts: yes
   vars:
     cert_user: AnsibleCertUser
-    cert_path: "../cert"   # folder created by setup_certificate.yml
+    cert_path: "{{ playbook_dir }}/../cert"
   tasks:
-    - name: Ensure WinRM service is running
-      ansible.windows.win_service:
-        name: WinRM
-        start_mode: auto
-        state: started
-
-    - name: Enable certificate authentication
-      ansible.windows.win_shell: |
-        winrm set winrm/config/service/auth @{Certificate="true"}
-      args:
-        executable: powershell
-
-    - name: Ensure HTTPS listener exists on 5986
-      ansible.windows.win_shell: |
-        if (-not (Get-ChildItem WSMan:\LocalHost\Listener | Where-Object { $_.Keys -eq "Transport=HTTPS" })) {
-            winrm create winrm/config/Listener?Address=*+Transport=HTTPS
-        }
-      args:
-        executable: powershell
-
-    - name: Ensure firewall allows 5986
-      ansible.windows.win_shell: |
-        if (-not (Get-NetFirewallRule -DisplayName "WinRM HTTPS")) {
-          New-NetFirewallRule -DisplayName "WinRM HTTPS" -Direction Inbound -LocalPort 5986 -Protocol TCP -Action Allow -Enabled True
-        }
-      args:
-        executable: powershell
-
-    - name: Map certificate to user
-      ansible.windows.win_shell: |
-        $thumb = (Get-ChildItem -Path Cert:\LocalMachine\My | Where-Object { $_.Subject -like "*{{ cert_user }}*" }).Thumbprint
-        winrm set winrm/config/service/certmapping @{CertificateThumbprint=$thumb;UserName="{{ cert_user }}"}
-      args:
-        executable: powershell
-
-    - name: Test Windows connectivity via certificate
-      ansible.windows.win_ping:
-      vars:
-        ansible_connection: winrm
-        ansible_winrm_transport: certificate
-        ansible_winrm_cert_pem: "{{ cert_path }}/client_cert.pem"
-        ansible_winrm_cert_key_pem: "{{ cert_path }}/client_key.pem"
-        ansible_port: 5986
-        ansible_winrm_server_cert_validation: ignore
+    - name: Run Windows setup playbook
+      ansible.builtin.import_playbook: ./setup_windows.yml
