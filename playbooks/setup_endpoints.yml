@@ -6,25 +6,19 @@
 # Generate certificates
 # ---------------------------
 - name: Generate Certificates for all endpoints
-  hosts: localhost
-  gather_facts: false
-  vars:
-    cert_dir: "{{ playbook_dir }}/../cert"
-  tasks:
-    - name: Run certificate setup playbook
-      ansible.builtin.import_playbook: ./setup_certificate.yml
+  ansible.builtin.import_playbook: ./setup_certificate.yml
 
 # ---------------------------
 # Distribute certificates
 # ---------------------------
-- name: Distribute certificates to endpoints
-  hosts: all
-  gather_facts: yes
-  vars:
-    cert_dir: "{{ playbook_dir }}/../cert"
-  tasks:
-    - name: Import distribution playbook
-      ansible.builtin.import_playbook: ./distribute_certificates.yml
+- name: Distribute Certificate to all endpoints
+  ansible.builtin.import_playbook: ./distribute_certificate.yml
+
+# --------------------------
+# Configure Windows Hosts
+# --------------------------
+- name: Setup Windows hosts for certificate-based WinRM
+  ansible.builtin.import_playbook: ./setup_windows.yml
 
 # ---------------------------
 # Configure Linux hosts
@@ -32,7 +26,7 @@
 - name: Configure Linux hosts
   hosts: rocky:ubuntu_vms
   become: true
-  gather_facts: yes
+  gather_facts: true
   vars:
     ssh_ports:
       RedHat: 22
@@ -76,16 +70,3 @@
 
     - name: Test Linux connectivity
       ansible.builtin.ping:
-
-# ---------------------------
-# Configure Windows hosts
-# ---------------------------
-- name: Configure Windows hosts for certificate-based WinRM
-  hosts: windows
-  gather_facts: yes
-  vars:
-    cert_user: AnsibleCertUser
-    cert_path: "{{ playbook_dir }}/../cert"
-  tasks:
-    - name: Run Windows setup playbook
-      ansible.builtin.import_playbook: ./setup_windows.yml
