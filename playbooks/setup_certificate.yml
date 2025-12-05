@@ -1,16 +1,24 @@
 - name: Setup Certificates
   hosts: localhost
   gather_facts: false
+  vars:
+    cert_dir: "{{ playbook_dir }}/../cert"
   tasks:
+
   - name: Verify required facts are setup
-    assert:
+    ansible.builtin.assert:
       that:
-      - username is defined
+        - username is defined
+        - playbook_dir is defined
+
 
   - name: Create certificate output dir
     ansible.builtin.file:
-      path: '{{ playbook_dir }}/cert'
+      path: '{{ cert_dir }}'
       state: directory
+      owner: "{{ ansible_user | default('student') }}"
+      group: "{{ ansible_user | default('student') }}"
+      mode: '0700'
 
   # This isn't used for WinRM, the modules just require a passphrase to be set.
   - name: Generate certificate key password
@@ -19,48 +27,51 @@
 
   - name: Create CA private key
     community.crypto.openssl_privatekey:
-      path: '{{ playbook_dir }}/cert/ca.key'
+      path: '{{ cert_dir }}/ca.key'
       passphrase: "{{ certificate_password }}"
       cipher: auto
+      # Needed to prevent overwritting private key
+      regenerate: never
+    register: ca_key
 
   - name: Create CA CSR
     community.crypto.openssl_csr_pipe:
-      privatekey_path: '{{ playbook_dir }}/cert/ca.key'
+      privatekey_path: '{{ cert_dir }}/ca.key'
       privatekey_passphrase: "{{ certificate_password }}"
       common_name: WinRM Cert Auth CA
       use_common_name_for_san: false
       basic_constraints:
-      - 'CA:TRUE'
+        - 'CA:TRUE'
       basic_constraints_critical: true
       key_usage:
-      - keyCertSign
+        - keyCertSign
       key_usage_critical: true
     register: ca_csr
     changed_when: false
 
   - name: Create CA certificate from CSR
     community.crypto.x509_certificate:
-      path: '{{ playbook_dir }}/cert/ca.pem'
+      path: '{{ cert_dir }}/ca.pem'
       csr_content: "{{ ca_csr.csr }}"
-      privatekey_path: '{{ playbook_dir }}/cert/ca.key'
+      privatekey_path: '{{ cert_dir }}/ca.key'
       privatekey_passphrase: "{{ certificate_password }}"
       provider: selfsigned
 
   - name: Create Client certificate private key
     community.crypto.openssl_privatekey:
-      path: '{{ playbook_dir }}/cert/client_cert.key'
+      path: '{{ cert_dir }}/client_cert.key'
       passphrase: '{{ certificate_password }}'
       cipher: auto
 
   - name: Create Client certificate CSR
     community.crypto.openssl_csr_pipe:
-      privatekey_path: '{{ playbook_dir }}/cert/client_cert.key'
+      privatekey_path: '{{ cert_dir }}/client_cert.key'
       privatekey_passphrase: '{{ certificate_password }}'
       # The common name does not need to be the username, we just use this
       # format by convention and to make it easy to identify who it maps to.
       common_name: '{{ username }}'
       extended_key_usage:
-      - clientAuth
+        - clientAuth
       # OID here represents userPrincipalName.
       # The format of the value isn't important, we only use this format by
       # convention.
@@ -70,14 +81,17 @@
 
   - name: Create Client certificate from CSR
     community.crypto.x509_certificate:
-      path: '{{ playbook_dir }}/cert/client_cert.pem'
+      path: '{{ cert_dir }}/client_cert.pem'
       csr_content: "{{ cert_auth_csr.csr }}"
       provider: ownca
-      ownca_path: '{{ playbook_dir }}/cert/ca.pem'
-      ownca_privatekey_path: '{{ playbook_dir }}/cert/ca.key'
+      ownca_path: '{{ cert_dir }}/ca.pem'
+      ownca_privatekey_path: '{{ cert_dir }}/ca.key'
       ownca_privatekey_passphrase: "{{ certificate_password }}"
       ownca_not_after: +365d
       ownca_not_before: '-1d'
+      # This keeps from over writing existing keys
+      regenerate: never
+    register: client_cert
 
   # The Python requests library used in WinRM transports do not support
   # encrypted private keys, we need to generate a key without a passphrase.
@@ -88,11 +102,17 @@
         -in client_cert.key
         -out client_cert_no_pass.key
         -passin pass:{{ certificate_password }}
-      chdir: '{{ playbook_dir }}/cert'
-      creates: '{{ playbook_dir }}/cert/client_cert_no_pass.key'
+      chdir: '{{ cert_dir }}'
+      creates: '{{ cert_dir }}/client_cert_no_pass.key'
+    register: strip_key
+    changed_when: strip_key.rc == 0 and strip_key.stdout != ""
 
   - name: Output summary
     ansible.builtin.debug:
-      msg: >-
-        CA and Client Certificate has been generated at '{{ playbook_dir }}/cert'.
-        The password for both private keys is '{{ certificate_password }}'.
+      msg: |
+        CA and Client Certificate has been generated at {{ cert_dir }}
+        CA Key:               {{ cert_dir }}/ca.key
+        CA Cert:              {{ cert_dir }}/ca.pem
+        Client cert:          {{ cert_dir }}/client_cert.pem
+        Client key:           {{ cert_dir }}/client_cert_no_pass.key
+        Private key password: {{ certificate_password }}
