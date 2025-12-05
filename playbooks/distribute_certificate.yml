@@ -2,8 +2,8 @@
   hosts: all
   gather_facts: true
   vars:
-    cert_dir: "{{ playbook_dir }}/../cert"
-    remote_cert_dir_linux: "/etc/ssl/certs/ansible"   # example path for Linux hosts
+    cert_dir: "/home/student/project/nssa320g7/cert"
+    remote_cert_dir_linux: "/etc/ssl/certs/ansible"
     remote_cert_dir_windows: "C:\\Windows\\TEMP\\ansible_certs"
 
   tasks:
