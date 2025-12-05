@@ -25,15 +25,19 @@
     ansible.builtin.set_fact:
       certificate_password: "{{ lookup('ansible.builtin.password', playbook_dir ~ '/cert/cert_password', length=15) }}"
 
+  #-----------------------------------------------------------------------
+  # CA PRIVATE KEY: (idempotent: module will not overwrite and existing key)
+  #-----------------------------------------------------------------------
   - name: Create CA private key
     community.crypto.openssl_privatekey:
       path: '{{ cert_dir }}/ca.key'
       passphrase: "{{ certificate_password }}"
       cipher: auto
-      # Needed to prevent overwritting private key
-      regenerate: never
     register: ca_key
 
+  #------------------------------------
+  # CA CSR
+  #-----------------------------------
   - name: Create CA CSR
     community.crypto.openssl_csr_pipe:
       privatekey_path: '{{ cert_dir }}/ca.key'
@@ -47,7 +51,12 @@
         - keyCertSign
       key_usage_critical: true
     register: ca_csr
-    changed_when: false
+    #CSR will alway be identical
+    changed_when: false 
+
+  #------------------------------------------------------
+  # CA Cert: (idempotent: module check existing certificate
+  #-------------------------------------------------------
 
   - name: Create CA certificate from CSR
     community.crypto.x509_certificate:
@@ -57,12 +66,18 @@
       privatekey_passphrase: "{{ certificate_password }}"
       provider: selfsigned
 
+  #----------------------------------
+  # CLIENT PRIVATE KEY: (idempotent)
+  #----------------------------------
   - name: Create Client certificate private key
     community.crypto.openssl_privatekey:
       path: '{{ cert_dir }}/client_cert.key'
       passphrase: '{{ certificate_password }}'
       cipher: auto
 
+  #----------------------------------
+  # CLIENT CSR: (deterministic)
+  #----------------------------------
   - name: Create Client certificate CSR
     community.crypto.openssl_csr_pipe:
       privatekey_path: '{{ cert_dir }}/client_cert.key'
@@ -79,6 +94,9 @@
     register: cert_auth_csr
     changed_when: false
 
+  #---------------------------------
+  # CLIENT CERT from CA: (idempotent compares existing cert with CSR
+  #---------------------------------
   - name: Create Client certificate from CSR
     community.crypto.x509_certificate:
       path: '{{ cert_dir }}/client_cert.pem'
@@ -93,6 +111,10 @@
       regenerate: never
     register: client_cert
 
+  #----------------------------------------------------
+  # STRIP PASSWORD (idempotent using creates)
+  #----------------------------------------------------
+
   # The Python requests library used in WinRM transports do not support
   # encrypted private keys, we need to generate a key without a passphrase.
   - name: Strip passphrase from client certificate key
@@ -106,6 +128,10 @@
       creates: '{{ cert_dir }}/client_cert_no_pass.key'
     register: strip_key
     changed_when: strip_key.rc == 0 and strip_key.stdout != ""
+
+  #-----------------------------------------
+  # Summary
+  #----------------------------------------
 
   - name: Output summary
     ansible.builtin.debug:
