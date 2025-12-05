@@ -1,50 +1,100 @@
-- name: Distribute certificates to endpoints
+- name: Distribute Certificates to All Endpoints
   hosts: all
   gather_facts: true
   vars:
-    cert_dir: "{{ playbook_dir }}/../cert"   # local directory on controller
-    linux_ca_dest: "/etc/ssl/certs/ca.pem"
-    windows_cert_dest: "C:\\cert"
+    cert_dir: "{{ playbook_dir }}/../cert"
+    remote_cert_dir_linux: "/etc/ssl/certs/ansible"   # example path for Linux hosts
+    remote_cert_dir_windows: "C:\\Windows\\TEMP\\ansible_certs"
+
   tasks:
 
-    # ----------------------------
-    # Linux hosts
-    # ----------------------------
-    - name: Ensure CA directory exists on Linux hosts
+    # -------------------------------
+    # Ensure remote directory exists
+    # -------------------------------
+    - name: Create certificate directory on Linux hosts
       ansible.builtin.file:
-        path: "{{ linux_ca_dest | dirname }}"
+        path: "{{ remote_cert_dir_linux }}"
         state: directory
-        mode: '0755'
-      when: ansible_os_family in ['Debian', 'RedHat', 'Rocky']
+        owner: root
+        group: root
+        mode: "0755"
+      when: ansible_os_family in ["Debian", "RedHat", "Suse"]
 
+    - name: Create certificate directory on Windows hosts
+      ansible.windows.win_file:
+        path: "{{ remote_cert_dir_windows }}"
+        state: directory
+      when: ansible_os_family == "Windows"
+
+    # -------------------------------
+    # Copy CA certificate
+    # -------------------------------
     - name: Copy CA certificate to Linux hosts
       ansible.builtin.copy:
         src: "{{ cert_dir }}/ca.pem"
-        dest: "{{ linux_ca_dest }}"
+        dest: "{{ remote_cert_dir_linux }}/ca.pem"
         owner: root
         group: root
-        mode: '0644'
-      when: ansible_os_family in ['Debian', 'RedHat', 'Rocky']
-
-    # ----------------------------
-    # Windows hosts
-    # ----------------------------
-    - name: Ensure certificate directory exists on Windows hosts
-      ansible.windows.win_file:
-        path: "{{ windows_cert_dest }}"
-        state: directory
-
-    - name: Copy client certificate PEM to Windows hosts
-      ansible.windows.win_copy:
-        src: "{{ cert_dir }}/client_cert.pem"
-        dest: "{{ windows_cert_dest }}\\client_cert.pem"
-
-    - name: Copy client certificate private key (no passphrase) to Windows hosts
-      ansible.windows.win_copy:
-        src: "{{ cert_dir }}/client_cert_no_pass.key"
-        dest: "{{ windows_cert_dest }}\\client_cert_no_pass.key"
+        mode: "0644"
+      when: ansible_os_family in ["Debian", "RedHat", "Suse"]
 
     - name: Copy CA certificate to Windows hosts
       ansible.windows.win_copy:
         src: "{{ cert_dir }}/ca.pem"
-        dest: "{{ windows_cert_dest }}\\ca.pem"
+        dest: "{{ remote_cert_dir_windows }}\\ca.pem"
+      when: ansible_os_family == "Windows"
+
+    # -------------------------------
+    # Copy client certificate
+    # -------------------------------
+    - name: Copy client certificate to Linux hosts
+      ansible.builtin.copy:
+        src: "{{ cert_dir }}/client_cert.pem"
+        dest: "{{ remote_cert_dir_linux }}/client_cert.pem"
+        owner: root
+        group: root
+        mode: "0644"
+      when: ansible_os_family in ["Debian", "RedHat", "Suse"]
+
+    - name: Copy client certificate to Windows hosts
+      ansible.windows.win_copy:
+        src: "{{ cert_dir }}/client_cert.pem"
+        dest: "{{ remote_cert_dir_windows }}\\client_cert.pem"
+      when: ansible_os_family == "Windows"
+
+    # -------------------------------
+    # Copy client private key (if needed)
+    # -------------------------------
+    - name: Copy client private key to Linux hosts
+      ansible.builtin.copy:
+        src: "{{ cert_dir }}/client_cert_no_pass.key"
+        dest: "{{ remote_cert_dir_linux }}/client_cert.key"
+        owner: root
+        group: root
+        mode: "0600"
+      when: ansible_os_family in ["Debian", "RedHat", "Suse"]
+
+    - name: Copy client private key to Windows hosts
+      ansible.windows.win_copy:
+        src: "{{ cert_dir }}/client_cert_no_pass.key"
+        dest: "{{ remote_cert_dir_windows }}\\client_cert.key"
+      when: ansible_os_family == "Windows"
+
+    # -------------------------------
+    # Optional: Register certificates in Windows cert store
+    # -------------------------------
+    - name: Import CA certificate to Windows Trusted Root store
+      ansible.windows.win_certificate_store:
+        path: "{{ remote_cert_dir_windows }}\\ca.pem"
+        state: present
+        store_location: LocalMachine
+        store_name: Root
+      when: ansible_os_family == "Windows"
+
+    - name: Import client certificate to Windows Trusted People store
+      ansible.windows.win_certificate_store:
+        path: "{{ remote_cert_dir_windows }}\\client_cert.pem"
+        state: present
+        store_location: LocalMachine
+        store_name: TrustedPeople
+      when: ansible_os_family == "Windows"
