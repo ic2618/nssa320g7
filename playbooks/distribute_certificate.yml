@@ -3,7 +3,7 @@
   gather_facts: true
   vars:
     cert_dir: "/home/student/project/nssa320g7/cert"
-    remote_cert_dir_linux: "/etc/ssl/certs/ansible"
+    remote_cert_dir_linux: "/home/ansible/.certs"
     remote_cert_dir_windows: "C:\\Windows\\TEMP\\ansible_certs"
 
   tasks:
@@ -36,6 +36,8 @@
         owner: root
         group: root
         mode: "0644"
+      become: true
+      become_method: sudo
       when: ansible_os_family in ["Debian", "RedHat", "Suse"]
 
     - name: Copy CA certificate to Windows hosts
@@ -54,6 +56,8 @@
         owner: root
         group: root
         mode: "0644"
+      become: true
+      become_method: sudo
       when: ansible_os_family in ["Debian", "RedHat", "Suse"]
 
     - name: Copy client certificate to Windows hosts
@@ -72,6 +76,8 @@
         owner: root
         group: root
         mode: "0600"
+      become: true
+      become_method: true
       when: ansible_os_family in ["Debian", "RedHat", "Suse"]
 
     - name: Copy client private key to Windows hosts

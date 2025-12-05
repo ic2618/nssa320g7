@@ -153,7 +153,7 @@
     - name: Fail if WinRM cert-auth did not enable
       ansible.builtin.assert:
         that:
-          - winrm_auth_status.output[0] -eq "True"
+          - winrm_auth_status.output[0] == "True"
         fail_msg: "WinRM certificate authentication was NOT enabled!"
 
 
