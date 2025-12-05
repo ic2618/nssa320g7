@@ -119,9 +119,14 @@
     - name: Retrieve thumbprint from certificate store
       ansible.windows.win_powershell:
         script: |
-          $cert = Get-ChildItem -Path Cert:\LocalMachine\TrustedPeople | Where-Object { $_.Subject -like "*{{ username }}*" }
-          if (-not $cert) { Write-Output "NOT_FOUND" }
-          else { $cert.Thumbprint }
+          $pattern = "*CN={{ username }}*"
+          $matches = Get-ChildItem -Path Cert:\LocalMachine\TrustedPeople |
+                     Where-Object { $_.Subject -like $pattern -and $_.NotAfter -gt (Get-Date) } |
+                     Sort-Object NotBefore -Descending
+          if ($matches -and $matches.Count -gt 0) {
+            $cert = $matches[0]
+            $cert.Thumbprint
+          } else { "NONE" }
       register: client_thumb
 
     - name: Fail if thumbprint cannot be extracted
@@ -153,7 +158,7 @@
     - name: Fail if WinRM cert-auth did not enable
       ansible.builtin.assert:
         that:
-          - winrm_auth_status.output[0] == "True"
+          - winrm_auth_status.output[0] | bool
         fail_msg: "WinRM certificate authentication was NOT enabled!"
 
 
@@ -167,12 +172,53 @@
           $existing = Get-ChildItem WSMan:\localhost\ClientCertificate | Where-Object { $_.Thumbprint -eq $thumb }
 
           if (-not $existing) {
-            winrm set winrm/config/service/certmapping @{
-              CertificateThumbprint = $thumb;
-              UserName = "{{ username }}";
+              # Create Credential for Cert
+              $user = "{{ username }}"
+              $password = "{{ user_password }}"
+              $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+              $credential = New-Object System.Management.Automation.PSCredential ($user,$securePass)
+
+              # Get client certificate object
+              $clientCert = Get-Item "Cert:\LocalMachine\TrustedPeople\$thumb"
+              $subject = $clientCert.GetNameInfo('UpnName', $false)
+
+              $certChain = New-Object -TypeName Security.Cryptography.X509Certificates.X509Chain
+              [void]$certChain.Build($clientCert)
+              $caThumbprint = $certChain.ChainElements.Certificate[-1].Thumbprint
+
+              # Certificate mapping
+              $certMapping = @{
+                  Path = 'WSMan:\localhost\ClientCertificate'
+                  Subject = $subject
+                  Issuer = $caThumbprint
+                  Credential = $credential
+                  Force = $true
+            }
+            $null = New-Item @certMapping
+
+            # Ouput info for Ansible
+            [PSCustomObject]@{
+                Status      = "CREATED"
+                Thumbprint  = $thumb
+                Subject     = $subject
+                IssuerThumb = $caThumbprint
+                Username    = $user
+            }
+          } else {
+            $existingMapping = $existing | Select-Object Thumbprint, Subject, Issuer, Enabled
+            [PSCustomObject]@{
+                Status      = "EXISTS"
+                Thumbprint  = $existingMapping.Thumbprint
+                Subject     = $existingMapping.Thumbprint
+                IssuerThumb = $existingMapping.Issuer
+                Enabled     = $existingMapping.Enabled
             }
           }
-      register: certmap_result
+    register: certmap_result
+
+    # ------------------------------------------------------------------------
+    # Validate Certificate Mapping
+    # ------------------------------------------------------------------------
 
     - name: Validate certificate mapping
       ansible.windows.win_powershell:
