@@ -168,8 +168,42 @@
     - name: Map certificate thumbprint to user (idempotent)
       ansible.windows.win_powershell:
         script: |
-          $thumb = "{{ client_thumb.output[0] }}"
-          $existing = Get-ChildItem WSMan:\localhost\ClientCertificate | Where-Object { $_.Thumbprint -eq $thumb }
+          # Create needed variables
+          $thumb = "{{ client_thumb.output[0] }}"  
+          # Get client certificate object
+          $clientCert = Get-Item "Cert:\LocalMachine\TrustedPeople\$thumb"
+          $subject = $clientCert.GetNameInfo('UpnName', $false)
+
+          $certChain = New-Object -TypeName Security.Cryptography.X509Certificates.X509Chain
+          [void]$certChain.Build($clientCert)
+          $caThumbprint = $certChain.ChainElements.Certificate[-1].Thumbprint
+
+          # Enumerate all certificate mappings
+          $allMappings = Get-ChildItem WSMan:\localhost\ClientCertificate | ForEach-Object { $_ | Get-Item }
+          $existing = $false
+
+          # Loop through all mappings
+          foreach($mapping in $allMappings){
+              $map = $mapping | Get-Item
+
+              # WSMan Keys come in fixed order:
+              # 0 - URI
+              # 1 - Issuer-xxxxx
+              # 2 - Subject-xxxx
+
+              # Extract values AFTER "="
+              $issuerParts = $map.Keys[1] -split "=", 2
+              $subjectParts = $map.Keys[2] -split "=", 2
+
+              $issuerValue = $issuerParts[1]
+              $subjectValue = $subjectParts[1]
+
+              if($issuerValue -eq $caThumbprint -and $subjectValue -like $subject) {
+                  $existing = $true
+              }
+
+          }
+
 
           if (-not $existing) {
               # Create Credential for Cert
@@ -177,14 +211,6 @@
               $password = "{{ user_password }}"
               $securePass = ConvertTo-SecureString $password -AsPlainText -Force
               $credential = New-Object System.Management.Automation.PSCredential ($user,$securePass)
-
-              # Get client certificate object
-              $clientCert = Get-Item "Cert:\LocalMachine\TrustedPeople\$thumb"
-              $subject = $clientCert.GetNameInfo('UpnName', $false)
-
-              $certChain = New-Object -TypeName Security.Cryptography.X509Certificates.X509Chain
-              [void]$certChain.Build($clientCert)
-              $caThumbprint = $certChain.ChainElements.Certificate[-1].Thumbprint
 
               # Certificate mapping
               $certMapping = @{
@@ -214,7 +240,7 @@
                 Enabled     = $existingMapping.Enabled
             }
           }
-    register: certmap_result
+      register: certmap_result
 
     # ------------------------------------------------------------------------
     # Validate Certificate Mapping
@@ -223,9 +249,42 @@
     - name: Validate certificate mapping
       ansible.windows.win_powershell:
         script: |
-          $thumb = "{{ client_thumb.output[0] }}"
-          $mapped = Get-ChildItem WSMan:\localhost\ClientCertificate | Where-Object { $_.Thumbprint -eq $thumb }
-          if ($mapped) { "OK" } else { "NOT_MAPPED" }
+          # Create needed variables
+          $thumb = "{{ client_thumb.output[0] }}"  
+          # Get client certificate object
+          $clientCert = Get-Item "Cert:\LocalMachine\TrustedPeople\$thumb"
+          $subject = $clientCert.GetNameInfo('UpnName', $false)
+
+          $certChain = New-Object -TypeName Security.Cryptography.X509Certificates.X509Chain
+          [void]$certChain.Build($clientCert)
+          $caThumbprint = $certChain.ChainElements.Certificate[-1].Thumbprint
+
+          # Enumerate all certificate mappings
+          $allMappings = Get-ChildItem WSMan:\localhost\ClientCertificate | ForEach-Object { $_ | Get-Item }
+          $existing = $false
+
+          # Loop through all mappings
+          foreach($mapping in $allMappings){
+              $map = $mapping | Get-Item
+
+              # WSMan Keys come in fixed order:
+              # 0 - URI
+              # 1 - Issuer-xxxxx
+              # 2 - Subject-xxxx
+
+              # Extract values AFTER "="
+              $issuerParts = $map.Keys[1] -split "=", 2
+              $subjectParts = $map.Keys[2] -split "=", 2
+
+              $issuerValue = $issuerParts[1]
+              $subjectValue = $subjectParts[1]
+
+              if($issuerValue -eq $caThumbprint -and $subjectValue -like $subject) {
+                  $existing = $true
+              }
+
+          }
+          if ($existing) { "OK" } else { "NOT MAPPED" }
       register: certmap_check
 
     - name: Fail if cert not mapped to user
@@ -236,12 +295,12 @@
 
 
     # -------------------------------------------------------------------------
-    # Generate cert-only inventory
+    # Generate cert-only inventory for windows hosts
     # -------------------------------------------------------------------------
     - name: Generate WinRM cert-auth inventory file
       ansible.builtin.template:
-        src: templates/cert_inventory.ini.j2
-        dest: "{{ playbook_dir }}/cert_inventory.ini"
+        src: ../templates/cert_inventory.ini.j2
+        dest: "./../cert_inventory.ini"
         mode: '0600'
       delegate_to: localhost
       run_once: true
