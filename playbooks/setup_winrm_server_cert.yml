@@ -1,0 +1,71 @@
+- name: Setup WinRM HTTPS listener with server certificate
+  hosts: windows
+  gather_facts: no
+  vars:
+    # Path to the server certificate files on the control node
+    cert_dir: "/home/student/project/nssa320g7/cert"
+    server_cert_path: "{{ cert_dir }}/winrm_server.crt"
+    server_key_path: "{{ cert_dir }}/winrm_server.key"
+
+    # Set a password if needed, empty string if none
+    pfx_password: ""
+
+  tasks:
+
+    - name: Copy server certificate to Windows host
+      ansible.windows.win_copy:
+        src: "{{ server_cert_path }}"
+        dest: "C:\\Temp\\winrm_server.crt"
+
+    - name: Copy server private key to Windows host
+      ansible.windows.win_copy:
+        src: "{{ server_key_path }}"
+        dest: "C:\\Temp\\winrm_server.key"
+
+    - name: Combine server cert and key into PFX
+      ansible.windows.win_shell: |
+        $certPath = "C:\Temp\winrm_server.crt"
+        $keyPath  = "C:\Temp\winrm_server.key"
+        $pfxPath  = "C:\Temp\winrm_server.pfx"
+        $password = ConvertTo-SecureString -String "{{ pfx_password }}" -Force -AsPlainText
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certPath)
+        $key  = Get-Content $keyPath -Raw
+        $pfx  = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+        $pfx.Import($certPath, $pfx_password, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet)
+        $pfx.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password) | Set-Content -Path $pfxPath -Encoding Byte
+
+    - name: Import PFX into LocalMachine\My store
+      ansible.windows.win_shell: |
+        $pfxPath = "C:\Temp\winrm_server.pfx"
+        $password = ConvertTo-SecureString -String "{{ pfx_password }}" -Force -AsPlainText
+        Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\My -Password $password
+
+    - name: Get imported server certificate thumbprint
+      ansible.windows.win_shell: |
+        $hostname = "{{ ansible_host }}"
+        $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -like "*$hostname*" -and $_.EnhancedKeyUsageList.FriendlyName -contains "Server Authentication" }
+        Write-Output $cert.Thumbprint
+      register: server_cert_thumbprint
+
+    - name: Create WinRM HTTPS listener if it does not exist
+      ansible.windows.win_shell: |
+        $thumbprint = "{{ server_cert_thumbprint.stdout }}"
+        $hostname = "{{ ansible_host }}"
+        $listener = winrm enumerate winrm/config/listener | Where-Object { $_.Transport -eq 'HTTPS' }
+        if (-not $listener) {
+            winrm create winrm/config/Listener?Address=*+Transport=HTTPS @{
+                Hostname = $hostname;
+                CertificateThumbprint = $thumbprint
+            }
+        } else {
+            Write-Host "HTTPS WinRM listener already exists."
+      ignore_errors: yes
+
+    - name: Open firewall for WinRM HTTPS
+      ansible.windows.win_firewall_rule:
+        name: "WinRM HTTPS"
+        enable: yes
+        localport: 5986
+        protocol: TCP
+        direction: in
+        action: allow
