@@ -1,6 +1,6 @@
 - name: Setup WinRM HTTPS listener with server certificate
   hosts: windows
-  gather_facts: no
+  gather_facts: false
   vars:
     # Path to the server certificate files on the control node
     cert_dir: "/home/student/project/nssa320g7/cert"
@@ -43,7 +43,9 @@
     - name: Get imported server certificate thumbprint
       ansible.windows.win_shell: |
         $hostname = "{{ ansible_host }}"
-        $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -like "*$hostname*" -and $_.EnhancedKeyUsageList.FriendlyName -contains "Server Authentication" }
+        $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object {
+            $_.Subject -like "*$hostname*" -and $_.EnhancedKeyUsageList.FriendlyName -contains "Server Authentication"
+        }
         Write-Output $cert.Thumbprint
       register: server_cert_thumbprint
 
@@ -59,12 +61,11 @@
             }
         } else {
             Write-Host "HTTPS WinRM listener already exists."
-      ignore_errors: yes
 
     - name: Open firewall for WinRM HTTPS
-      ansible.windows.win_firewall_rule:
+      ansible.windows.win_firewall:
         name: "WinRM HTTPS"
-        enable: yes
+        enable: true
         localport: 5986
         protocol: TCP
         direction: in

@@ -169,7 +169,7 @@
       ansible.windows.win_powershell:
         script: |
           # Create needed variables
-          $thumb = "{{ client_thumb.output[0] }}"  
+          $thumb = "{{ client_thumb.output[0] }}"
           # Get client certificate object
           $clientCert = Get-Item "Cert:\LocalMachine\TrustedPeople\$thumb"
           $subject = $clientCert.GetNameInfo('UpnName', $false)
@@ -250,7 +250,7 @@
       ansible.windows.win_powershell:
         script: |
           # Create needed variables
-          $thumb = "{{ client_thumb.output[0] }}"  
+          $thumb = "{{ client_thumb.output[0] }}"
           # Get client certificate object
           $clientCert = Get-Item "Cert:\LocalMachine\TrustedPeople\$thumb"
           $subject = $clientCert.GetNameInfo('UpnName', $false)
