@@ -17,21 +17,30 @@
   tasks:
 
     - name: Check for existing WinRM server certificate on Windows (thumbprint)
-      ansible.windows.win_shell: >
-        $hostname = "{{ ansible_host }}"
-        $cert = Get-ChildItem Cert:\LocalMachine\My |
+      ansible.windows.win_shell: |
+        try {
+          $hostname = "{{ ansible_host }}"
+          $cert = Get-ChildItem Cert:\LocalMachine\My |
                 Where-Object {
                   ($_.EnhancedKeyUsageList.FriendlyName -contains "Server Authentication") -and
                   ( ($_.Subject -like "*CN=$hostname*") -or ($_.Subject -like "*$hostname*") -or ($_.Subject -like "*{{ inventory_hostname }}*") )
                 } |
                 Select-Object -First 1
-        if ($cert) { Write-Output $cert.Thumbprint } else { Write-Output "" }
+          if ($cert) { 
+              Write-Output $cert.Thumbprint
+          } else { 
+              Write-Output "" 
+          }
+        } catch {
+            Write-Output ""
+        }
       register: server_cert_thumbprint
+      failed_when: false
       changed_when: false
 
-    - name: ansible.builtin.debug - existing server cert thumbprint
+    - name: Debug - Existing server cert thumbprint
       ansible.builtin.debug:
-        msg: "Existing server cert thumbprint: {{ server_cert_thumbprint.stdout }}"
+        msg: "Existing server cert thumbprint: {{ server_cert_thumbprint.stdout | default('No Found') }}"
 
     - name: Ensure cert directory exists on control node
       delegate_to: localhost
@@ -62,13 +71,13 @@
         mode: '0644'
       changed_when: false
 
-    - name: stat - server key (control node)
+    - name: Register Variable - server key (control node)
       delegate_to: localhost
       ansible.builtin.stat:
         path: "{{ server_key_path }}"
       register: stat_server_key
 
-    - name: stat - server csr (control node)
+    - name: Register Variable - server csr (control node)
       delegate_to: localhost
       ansible.builtin.stat:
         path: "{{ server_csr_path }}"
@@ -89,7 +98,7 @@
       register: gen_csr_result
       changed_when: gen_csr_result.rc == 0
 
-    - name: stat - server crt (control node)
+    - name: Register Variable - server crt (control node)
       delegate_to: localhost
       ansible.builtin.stat:
         path: "{{ server_crt_path }}"
@@ -114,6 +123,12 @@
       register: sign_crt_result
       changed_when: sign_crt_result.rc == 0
 
+    - name: Check if PFX already exists (control node)
+      delegate_to: localhost
+      ansible.builtin.stat:
+          path: "{{ server_pfx_path }}"
+      register: server_pfx_stat
+
     - name: Create PFX from server key+crt+CA (control node) (if missing)
       delegate_to: localhost
       run_once: true
@@ -136,15 +151,24 @@
         fi
       args:
         executable: /bin/bash
-      when: not (ansible.builtin.stat(delegate_to='localhost', path=server_pfx_path) | bool)
+      when: not server_pfx_stat.stat.exists
       register: make_pfx_result
       changed_when: make_pfx_result.rc == 0
+
+    # -------------------------------------
+    # Copy Certs to Windows endpoints
+    # -------------------------------------
+
+    - name: Check if PFX exists on Windows Host
+      ansible.windows.win_stat:
+        path: "C:\\Temp\\winrm_server.pfx"
+      register: winrm_pfx_stat
 
     - name: Copy PFX to Windows host if server certificate absent on host
       ansible.windows.win_copy:
         src: "{{ server_pfx_path }}"
         dest: "C:\\Temp\\winrm_server.pfx"
-      when: server_cert_thumbprint.stdout == ""
+      when: not winrm_pfx_stat.stat.exists and server_pfx_stat.stat.exists
 
     - name: Import PFX into LocalMachine\\My store (Windows) if cert missing
       ansible.windows.win_shell: |
@@ -152,9 +176,13 @@
         $password = ConvertTo-SecureString -String "{{ pfx_password }}" -Force -AsPlainText
         Import-PfxCertificate -FilePath $pfxPath \
           -CertStoreLocation Cert:\LocalMachine\My -Password $password | Out-Null
-      when: server_cert_thumbprint.stdout == ""
+      when: winrm_pfx_stat.stat.exists and server_pfx_stat.stat.exists
       register: import_pfx
       changed_when: import_pfx.rc == 0
+
+    # ------------------------------------------------
+    # Check imported Certificates on Windows endpoints
+    # ------------------------------------------------
 
     - name: Re-check for imported server certificate thumbprint
       ansible.windows.win_shell: >
@@ -168,10 +196,6 @@
         if ($cert) { Write-Output $cert.Thumbprint } else { Write-Output "" }
       register: server_cert_thumbprint_after
       changed_when: false
-
-    - name: ansible.builtin.debug - imported server cert thumbprint
-      ansible.builtin.debug:
-        msg: "Imported server cert thumbprint: {{ server_cert_thumbprint_after.stdout }}"
 
     - name: Create WinRM HTTPS listener if it does not exist (Windows)
       ansible.windows.win_shell: |
