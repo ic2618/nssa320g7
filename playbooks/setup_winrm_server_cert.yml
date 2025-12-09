@@ -184,29 +184,29 @@
     # Check imported Certificates on Windows endpoints
     # ------------------------------------------------
 
-    - name: Re-check for imported server certificate thumbprint
-      ansible.windows.win_shell: >
-        $hostname = "{{ ansible_host }}"
-        $cert = Get-ChildItem Cert:\LocalMachine\My |
-                Where-Object {
-                  ($_.EnhancedKeyUsageList.FriendlyName -contains "Server Authentication") -and
-                  ( ($_.Subject -like "*CN=$hostname*") -or ($_.Subject -like "*$hostname*") -or ($_.Subject -like "*{{ inventory_hostname }}*") )
-                } |
-                Select-Object -First 1
-        if ($cert) { Write-Output $cert.Thumbprint } else { Write-Output "" }
-      register: server_cert_thumbprint_after
-      changed_when: false
+    - name: Check if server certificate with Server Authentication EKU exists (Windows)
+      ansible.windows.win_certificate_store:
+        store_name: My
+        store_location: LocalMachine
+        subject: "{{ ansible_host }}"
+      register: server_cert_check
 
-    - name: Create WinRM HTTPS listener if it does not exist (Windows)
+    - name: Filter certificates to only those with Server Authentication EKU
+      ansible.builtin.set_fact:
+        server_cert_with_eku: >-
+          {{
+            server_cert_check.certificates
+            | selectattr('enhanced_key_usage', 'defined')
+            | selectattr('enhanced_key_usage', 'contains', 'Server Authentication')
+            | list
+          }}
+
+    - name: Create WinRM HTTPS listener if Server Auth cert exists
       ansible.windows.win_shell: |
-        $thumbprint = "{{ server_cert_thumbprint_after.stdout }}"
-        if ([string]::IsNullOrWhiteSpace($thumbprint)) {
-          Write-Error "No server certificate thumbprint found; cannot create HTTPS listener."
-          exit 1
-        }
+        $thumbprint = "{{ server_cert_with_eku[0].thumbprint }}"
         $hostname = "{{ ansible_host }}"
         $listener = winrm enumerate winrm/config/listener |
-                    Where-Object { $_.Transport -eq 'HTTPS' }
+                Where-Object { $_.Transport -eq 'HTTPS' }
         if (-not $listener) {
             winrm create winrm/config/Listener?Address=*+Transport=HTTPS @{
                 Hostname = $hostname;
@@ -214,10 +214,12 @@
             }
         } else {
             Write-Host "HTTPS WinRM listener already exists."
-      register: winrm_listener
-      failed_when:
-        - winrm_listener.rc != 0
-        - "'already exists' not in (winrm_listener.stdout | default('') + winrm_listener.stderr | default(''))"
+        }
+  when: server_cert_with_eku | length > 0
+  register: winrm_listener
+  failed_when:
+    - winrm_listener.rc != 0
+    - "'already exists' not in (winrm_listener.stdout | default('') + winrm_listener.stderr | default(''))"
 
     - name: Open firewall for WinRM HTTPS (Windows)
       ansible.windows.win_firewall:
