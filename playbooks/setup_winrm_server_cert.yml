@@ -26,10 +26,10 @@
                   ( ($_.Subject -like "*CN=$hostname*") -or ($_.Subject -like "*$hostname*") -or ($_.Subject -like "*{{ inventory_hostname }}*") )
                 } |
                 Select-Object -First 1
-          if ($cert) { 
+          if ($cert) {
               Write-Output $cert.Thumbprint
-          } else { 
-              Write-Output "" 
+          } else {
+              Write-Output ""
           }
         } catch {
             Write-Output ""
@@ -48,6 +48,11 @@
         path: "{{ cert_dir }}"
         state: directory
         mode: '0755'
+
+    - name: Ensure C:\Temp exists on Windows Host
+      ansible.windows.win_file:
+        path: C:\Temp
+        state: directory
 
     - name: Create OpenSSL ext file for serverAuth EKU and SAN (control node)
       delegate_to: localhost
@@ -126,7 +131,7 @@
     - name: Check if PFX already exists (control node)
       delegate_to: localhost
       ansible.builtin.stat:
-          path: "{{ server_pfx_path }}"
+        path: "{{ server_pfx_path }}"
       register: server_pfx_stat
 
     - name: Create PFX from server key+crt+CA (control node) (if missing)
@@ -184,22 +189,20 @@
     # Check imported Certificates on Windows endpoints
     # ------------------------------------------------
 
-    - name: Check if server certificate with Server Authentication EKU exists (Windows)
-      ansible.windows.win_certificate_store:
+    - name: Get List of certificates in LocalMachine\My
+      ansible.windows.win_certificate_info:
         store_name: My
         store_location: LocalMachine
-        subject: "{{ ansible_host }}"
-      register: server_cert_check
+      register: cert_info
 
     - name: Filter certificates to only those with Server Authentication EKU
       ansible.builtin.set_fact:
         server_cert_with_eku: >-
-          {{
-            server_cert_check.certificates
+          {{ cert_info.certificates
             | selectattr('enhanced_key_usage', 'defined')
             | selectattr('enhanced_key_usage', 'contains', 'Server Authentication')
-            | list
-          }}
+            | selectattr('dns_names', 'contains', ansible_host)
+            | list }}
 
     - name: Create WinRM HTTPS listener if Server Auth cert exists
       ansible.windows.win_shell: |
@@ -215,11 +218,14 @@
         } else {
             Write-Host "HTTPS WinRM listener already exists."
         }
-  when: server_cert_with_eku | length > 0
-  register: winrm_listener
-  failed_when:
-    - winrm_listener.rc != 0
-    - "'already exists' not in (winrm_listener.stdout | default('') + winrm_listener.stderr | default(''))"
+      when:
+        - server_cert_with_eku is defined
+        - server_cert_with_eku.thumbprint is defined
+        - server_cert_with_eku.thumbprint | length > 0
+      register: winrm_listener
+      failed_when:
+        - winrm_listener.rc != 0
+        - "'already exists' not in (winrm_listener.stdout | default('') + winrm_listener.stderr | default(''))"
 
     - name: Open firewall for WinRM HTTPS (Windows)
       ansible.windows.win_firewall:
@@ -229,6 +235,10 @@
         protocol: TCP
         direction: in
         action: allow
+      when:
+        - server_cert_with_eku is defined
+        - server_cert_with_eku.thumbprint is defined
+        - server_cert_with_eku.thumbprint | length > 0
 
     - name: Optional - cleanup temporary ext file on control node (leave false by default)
       delegate_to: localhost
