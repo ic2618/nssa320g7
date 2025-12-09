@@ -1,4 +1,4 @@
-- name: Setup WinRM HTTPS listener with server certificate (CA-signed)
+- name: Setup WinRM HTTPS listener with CA-signed server certificate (refactored)
   hosts: windows
   gather_facts: false
   vars:
@@ -17,7 +17,7 @@
   tasks:
 
     - name: Check for existing WinRM server certificate on Windows (thumbprint)
-      ansible.windows.win_shell: |
+      ansible.windows.win_shell: >
         $hostname = "{{ ansible_host }}"
         $cert = Get-ChildItem Cert:\LocalMachine\My |
                 Where-Object {
@@ -29,12 +29,16 @@
       register: server_cert_thumbprint
       changed_when: false
 
-    - name: Debug - existing server cert thumbprint
-      debug:
+    - name: ansible.builtin.debug - existing server cert thumbprint
+      ansible.builtin.debug:
         msg: "Existing server cert thumbprint: {{ server_cert_thumbprint.stdout }}"
 
-    - name: Ensure cert directory exists on control node (local)
-      local_action: file path="{{ cert_dir }}" state=directory mode=0755
+    - name: Ensure cert directory exists on control node
+      delegate_to: localhost
+      ansible.builtin.file:
+        path: "{{ cert_dir }}"
+        state: directory
+        mode: '0755'
 
     - name: Create OpenSSL ext file for serverAuth EKU and SAN (control node)
       delegate_to: localhost
@@ -55,74 +59,105 @@
           [ alt_names ]
           DNS.1 = {{ ansible_host }}
           DNS.2 = {{ inventory_hostname }}
+        mode: '0644'
       changed_when: false
 
-    - name: Generate server private key and CSR on control node if missing
+    - name: stat - server key (control node)
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ server_key_path }}"
+      register: stat_server_key
+
+    - name: stat - server csr (control node)
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ server_csr_path }}"
+      register: stat_server_csr
+
+    - name: Generate server private key and CSR on control node (if missing)
       delegate_to: localhost
       run_once: true
       ansible.builtin.shell: |
         set -e
-        if [ ! -f "{{ server_key_path }}" ] || [ ! -f "{{ server_csr_path }}" ]; then
-          openssl genrsa -out "{{ server_key_path }}" 2048
-          openssl req -new -key "{{ server_key_path }}" -out "{{ server_csr_path }}" -config "{{ openssl_ext_path }}"
-        fi
+        openssl genrsa -out "{{ server_key_path }}" 2048
+        openssl req -new -key "{{ server_key_path }}" \
+          -out "{{ server_csr_path }}" \
+          -config "{{ openssl_ext_path }}"
       args:
         executable: /bin/bash
-      changed_when: "'Generating' in (stdout + stderr) or (not ( (server_key_exists|default(false)) and (server_csr_exists|default(false)) ))"
+      when: not (stat_server_key.stat.exists and stat_server_csr.stat.exists)
+      register: gen_csr_result
+      changed_when: gen_csr_result.rc == 0
 
-    - name: Sign CSR with CA to produce server certificate (control node) if missing
+    - name: stat - server crt (control node)
+      delegate_to: localhost
+      ansible.builtin.stat:
+        path: "{{ server_crt_path }}"
+      register: stat_server_crt
+
+    - name: Sign CSR with CA to produce server certificate (control node) (if missing)
       delegate_to: localhost
       run_once: true
       ansible.builtin.shell: |
         set -e
-        if [ ! -f "{{ server_crt_path }}" ]; then
-          # Create a serial file if not exists to let openssl CA signing proceed
-          if [ ! -f "{{ cert_dir }}/ca.srl" ]; then
-            touch "{{ cert_dir }}/ca.srl"
-          fi
-          openssl x509 -req -in "{{ server_csr_path }}" \
-            -CA "{{ ca_cert_path }}" \
-            -CAkey "{{ ca_key_path }}" \
-            -CAcreateserial \
-            -out "{{ server_crt_path }}" \
-            -days {{ server_cert_days }} \
-            -extensions v3_req -extfile "{{ openssl_ext_path }}"
-        fi
+        # Sign CSR with CA cert/key and include v3 extensions
+        openssl x509 -req -in "{{ server_csr_path }}" \
+          -CA "{{ ca_cert_path }}" \
+          -CAkey "{{ ca_key_path }}" \
+          -CAcreateserial \
+          -out "{{ server_crt_path }}" \
+          -days {{ server_cert_days }} \
+          -extensions v3_req -extfile "{{ openssl_ext_path }}"
       args:
         executable: /bin/bash
-      changed_when: "'Signature ok' in (stdout + stderr) or (not (stat_result_server_crt.stat.exists | default(false)))"
+      when: not stat_server_crt.stat.exists
+      register: sign_crt_result
+      changed_when: sign_crt_result.rc == 0
 
-    - name: Create PFX from server key+crt+CA (control node)
+    - name: Create PFX from server key+crt+CA (control node) (if missing)
       delegate_to: localhost
       run_once: true
       ansible.builtin.shell: |
         set -e
-        # If password is empty, OpenSSL expects an empty passout string
-        if [ ! -f "{{ server_pfx_path }}" ]; then
-          if [ -z "{{ pfx_password }}" ]; then
-            openssl pkcs12 -export -out "{{ server_pfx_path }}" -inkey "{{ server_key_path }}" -in "{{ server_crt_path }}" -certfile "{{ ca_cert_path }}" -passout pass:
-          else
-            openssl pkcs12 -export -out "{{ server_pfx_path }}" -inkey "{{ server_key_path }}" -in "{{ server_crt_path }}" -certfile "{{ ca_cert_path }}" -passout pass:{{ pfx_password }}
-          fi
+        if [ -z "{{ pfx_password }}" ]; then
+          openssl pkcs12 -export \
+            -out "{{ server_pfx_path }}" \
+            -inkey "{{ server_key_path }}" \
+            -in "{{ server_crt_path }}" \
+            -certfile "{{ ca_cert_path }}" \
+            -passout pass:
+        else
+          openssl pkcs12 -export \
+            -out "{{ server_pfx_path }}" \
+            -inkey "{{ server_key_path }}" \
+            -in "{{ server_crt_path }}" \
+            -certfile "{{ ca_cert_path }}" \
+            -passout pass:{{ pfx_password }}
         fi
       args:
         executable: /bin/bash
+      when: not (ansible.builtin.stat(delegate_to='localhost', path=server_pfx_path) | bool)
+      register: make_pfx_result
+      changed_when: make_pfx_result.rc == 0
 
-    - name: Copy PFX to Windows host if certificate not present
+    - name: Copy PFX to Windows host if server certificate absent on host
       ansible.windows.win_copy:
         src: "{{ server_pfx_path }}"
         dest: "C:\\Temp\\winrm_server.pfx"
       when: server_cert_thumbprint.stdout == ""
 
-    - name: Import PFX into LocalMachine\My store (Windows) if cert not present
+    - name: Import PFX into LocalMachine\\My store (Windows) if cert missing
       ansible.windows.win_shell: |
         $pfxPath = "C:\Temp\winrm_server.pfx"
         $password = ConvertTo-SecureString -String "{{ pfx_password }}" -Force -AsPlainText
-        Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\My -Password $password | Out-Null
+        Import-PfxCertificate -FilePath $pfxPath \
+          -CertStoreLocation Cert:\LocalMachine\My -Password $password | Out-Null
       when: server_cert_thumbprint.stdout == ""
+      register: import_pfx
+      changed_when: import_pfx.rc == 0
 
     - name: Re-check for imported server certificate thumbprint
-      ansible.windows.win_shell: |
+      ansible.windows.win_shell: >
         $hostname = "{{ ansible_host }}"
         $cert = Get-ChildItem Cert:\LocalMachine\My |
                 Where-Object {
@@ -134,8 +169,8 @@
       register: server_cert_thumbprint_after
       changed_when: false
 
-    - name: Debug - imported server cert thumbprint
-      debug:
+    - name: ansible.builtin.debug - imported server cert thumbprint
+      ansible.builtin.debug:
         msg: "Imported server cert thumbprint: {{ server_cert_thumbprint_after.stdout }}"
 
     - name: Create WinRM HTTPS listener if it does not exist (Windows)
@@ -146,7 +181,8 @@
           exit 1
         }
         $hostname = "{{ ansible_host }}"
-        $listener = winrm enumerate winrm/config/listener | Where-Object { $_.Transport -eq 'HTTPS' }
+        $listener = winrm enumerate winrm/config/listener |
+                    Where-Object { $_.Transport -eq 'HTTPS' }
         if (-not $listener) {
             winrm create winrm/config/Listener?Address=*+Transport=HTTPS @{
                 Hostname = $hostname;
@@ -155,10 +191,12 @@
         } else {
             Write-Host "HTTPS WinRM listener already exists."
       register: winrm_listener
-      failed_when: winrm_listener.rc != 0 and ("already exists" not in (winrm_listener.stdout | default("") + winrm_listener.stderr | default("")))
+      failed_when:
+        - winrm_listener.rc != 0
+        - "'already exists' not in (winrm_listener.stdout | default('') + winrm_listener.stderr | default(''))"
 
     - name: Open firewall for WinRM HTTPS (Windows)
-      ansible.windows.win_firewall_rule:
+      ansible.windows.win_firewall:
         name: "WinRM HTTPS"
         enable: true
         localport: 5986
@@ -166,17 +204,9 @@
         direction: in
         action: allow
 
-    - name: Clean up temporary files on control node (optional)
+    - name: Optional - cleanup temporary ext file on control node (leave false by default)
       delegate_to: localhost
-      run_once: true
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ openssl_ext_path }}"
         state: absent
-      loop:
-        - "{{ openssl_ext_path }}"
-        # keep key/crt/pfx if you want to reuse them; remove them only if you want cleanup
-        # - "{{ server_key_path }}"
-        # - "{{ server_csr_path }}"
-        # - "{{ server_crt_path }}"
-        # - "{{ server_pfx_path }}"
-      when: false  # set to true if you want the playbook to remove the ext file (and/or other artifacts)
+      when: false
