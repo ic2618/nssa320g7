@@ -1,8 +1,6 @@
 - name: Setup Certificates
   hosts: localhost
   gather_facts: false
-  vars:
-    cert_dir: "/home/student/project/nssa320g7/cert"
   tasks:
 
     # -------------------------------------------------------------------
@@ -30,12 +28,38 @@
         group: "{{ ansible_user | default('student') }}"
         mode: '0700'
 
-    # -------------------------------------------------------------------
-    # Generate password for certificate private keys
-    # -------------------------------------------------------------------
-    - name: Generate certificate key password
+    # --------------------------------------------------------------------
+    # Check if CA password exists in vault
+    # --------------------------------------------------------------------
+    - name: Check if CA key password already exists
       ansible.builtin.set_fact:
-        certificate_password: "{{ lookup('ansible.builtin.password', cert_dir ~ '/cert_password', length=15) }}"
+        ca_key_password_exists: "{{ ca_key_password is defined and ca_key_password | length > 0 }}"
+
+    # -------------------------------------------------------------------
+    # Generate password for certificate private keys if missing
+    # -------------------------------------------------------------------
+    - name: Generate certificate key password (only if missing)
+      ansible.builtin.set_fact:
+        ca_key_password_new: "{{ lookup('ansible.builtin.password', '/tmp/ca_key_password', length=15) }}"
+
+    # -------------------------------------------------------------------
+    # Store new password in vault
+    # -------------------------------------------------------------------
+    - name: Store new CA key password in group_vars/vault.yml
+      delegate_to: localhost
+      ansible.builtin.blockinfile:
+        path: "../group_vars/vault.yml"
+        block: |
+          ca_key_password: "{{ ca_key_password_new }}"
+      when: not ca_key_password_exists
+
+    # -------------------------------------------------------------------
+    # Set ca certificate password for use in tasks
+    # -------------------------------------------------------------------
+
+    - name: Set ca certificate password fact
+      ansible.builtin.set_fact:
+        certificate_password: "{{ ca_key_password if ca_key_password_exists else ca_key_password_new }}"
 
     # -------------------------------------------------------------------
     # Check if CA files exist

@@ -1,0 +1,4 @@
+# group_vars/linux.yml
+
+# Directory where linux hosts store recieved certificates
+remote_cert_dir_linux: "/home/ansible/.certs"

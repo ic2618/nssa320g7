@@ -1,10 +1,6 @@
 - name: Distribute Certificates to All Endpoints
   hosts: all
   gather_facts: true
-  vars:
-    cert_dir: "/home/student/project/nssa320g7/cert"
-    remote_cert_dir_linux: "/home/ansible/.certs"
-    remote_cert_dir_windows: "C:\\Windows\\TEMP\\ansible_certs"
 
   tasks:
 

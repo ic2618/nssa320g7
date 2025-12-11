@@ -1,18 +1,6 @@
 - name: Setup WinRM HTTPS listener with CA-signed server certificate (refactored)
   hosts: windows
   gather_facts: false
-  vars:
-    cert_dir: "/home/student/project/nssa320g7/cert"
-    ca_cert_path: "{{ cert_dir }}/ca.pem"
-    ca_key_path: "{{ cert_dir }}/ca.key"
-    server_key_path: "{{ cert_dir }}/winrm_server.key"
-    server_csr_path: "{{ cert_dir }}/winrm_server.csr"
-    server_crt_path: "{{ cert_dir }}/winrm_server.crt"
-    server_pfx_path: "{{ cert_dir }}/winrm_server.pfx"
-    # leave empty for no password; if set, supply the same below
-    pfx_password: ""
-    server_cert_days: 365
-    openssl_ext_path: "{{ cert_dir }}/winrm_ext.cnf"
 
   tasks:
 
@@ -139,7 +127,7 @@
       run_once: true
       ansible.builtin.shell: |
         set -e
-        if [ -z "{{ pfx_password }}" ]; then
+        if [ -z "{{ certificate_password }}" ]; then
           openssl pkcs12 -export \
             -out "{{ server_pfx_path }}" \
             -inkey "{{ server_key_path }}" \
@@ -152,7 +140,7 @@
             -inkey "{{ server_key_path }}" \
             -in "{{ server_crt_path }}" \
             -certfile "{{ ca_cert_path }}" \
-            -passout pass:{{ pfx_password }}
+            -passout pass:{{ certificate_password }}
         fi
       args:
         executable: /bin/bash
@@ -178,7 +166,7 @@
     - name: Import PFX into LocalMachine\\My store (Windows) if cert missing
       ansible.windows.win_shell: |
         $pfxPath = "C:\Temp\winrm_server.pfx"
-        $password = ConvertTo-SecureString -String "{{ pfx_password }}" -Force -AsPlainText
+        $password = ConvertTo-SecureString -String "{{ certificate_password }}" -Force -AsPlainText
         Import-PfxCertificate -FilePath $pfxPath \
           -CertStoreLocation Cert:\LocalMachine\My -Password $password | Out-Null
       when: winrm_pfx_stat.stat.exists and server_pfx_stat.stat.exists

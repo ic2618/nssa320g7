@@ -1,0 +1,10 @@
+# group_vars/windows.yml
+
+# Directory where winodws hosts store recieved certificates (temp folder)
+remote_cert_dir_windows: "C:\\Windows\\TEMP\\ansible_certs"
+
+# Default import path used by WinRM setup playbook
+winrm_cert_import_dir: "C:\\Temp"
+
+# WinRM HTTPS port
+winrm_https_port: 5986

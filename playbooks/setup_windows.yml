@@ -3,9 +3,6 @@
   gather_facts: true
   strategy: linear
 
-  vars:
-    cert_dir: "/home/student/project/nssa320g7/cert"
-
   tasks:
 
     # -------------------------------------------------------------------------
