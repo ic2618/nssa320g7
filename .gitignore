@@ -1,0 +1,5 @@
+# Ignore files created in /cert directory
+cert/*
+
+# Keep the cert/ directory itself
+!cert/.gitkeep
